@@ -2,7 +2,7 @@
 
 A fully local Retrieval-Augmented Generation (RAG) system. Feed it any text, ask it questions, get answers grounded in your own data — no cloud, no API costs, no data leaving your machine.
 
-Built with Ollama, Weaviate, and Python. Everything runs in Docker.
+Built with Ollama, Weaviate, and Python. Everything runs locally.
 
 ---
 
@@ -20,15 +20,20 @@ Built with Ollama, Weaviate, and Python. Everything runs in Docker.
 |---|---|
 | Local LLM + Embeddings | [Ollama](https://ollama.com) with `granite4.1:3b` |
 | Vector database | [Weaviate](https://weaviate.io) |
-| Runtime | Python 3.14 |
-| Infrastructure | Docker (host network) |
+| Embedding endpoint | Ollama `/api/embed` |
+| Generation endpoint | Ollama `/api/generate` |
+| Weaviate client | `weaviate-client` v4 (Python) |
+| HTTP client | `requests` (Python) |
+| Runtime | Python 3.8+ |
+| Infrastructure | Docker |
 
 ---
 
 ## Prerequisites
 
-- Ubuntu (or any Linux machine)
-- [Docker](https://docs.docker.com/engine/install/ubuntu/) installed and running
+- [Docker](https://docs.docker.com/get-docker/) installed and running
+- [Ollama](https://ollama.com/download) installed (available for macOS, Linux, and Windows)
+- Python 3.8+
 
 ---
 
@@ -36,19 +41,9 @@ Built with Ollama, Weaviate, and Python. Everything runs in Docker.
 
 ### 1. Install Ollama
 
-Go to [ollama.com](https://ollama.com) and follow the official Linux install instructions, or run:
+Download and install from [ollama.com/download](https://ollama.com/download) for your platform.
 
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-```
-
-Verify it is running:
-
-```bash
-ollama --version
-```
-
-Pull the model used by this project:
+Then pull the model used by this project:
 
 ```bash
 ollama pull granite4.1:3b
@@ -60,8 +55,6 @@ Ollama runs on `http://localhost:11434` by default.
 
 ### 2. Run Weaviate
 
-Run Weaviate as a Docker container on host network:
-
 ```bash
 docker run -d \
   --network host \
@@ -72,6 +65,8 @@ docker run -d \
   -e CLUSTER_HOSTNAME=node1 \
   cr.weaviate.io/semitechnologies/weaviate:latest
 ```
+
+> **Windows/macOS:** Replace `--network host` with `-p 8080:8080` since host networking behaves differently outside Linux.
 
 Verify it is running:
 
@@ -92,17 +87,7 @@ You should see a JSON response with Weaviate version info.
 
 ---
 
-### 3. Set up the Python environment
-
-Install dependencies:
-
-```bash
-pip3 install weaviate-client requests --break-system-packages
-```
-
----
-
-### 4. Clone this repo
+### 3. Clone this repo
 
 ```bash
 git clone https://github.com/satish-lakkimsetti/rag-knowledge-base.git
@@ -111,14 +96,49 @@ cd rag-knowledge-base
 
 ---
 
+### 4. Create a virtual environment and install dependencies
+
+```bash
+python -m venv venv
+```
+
+Activate it:
+
+```bash
+# macOS / Linux
+source venv/bin/activate
+
+# Windows
+venv\Scripts\activate
+```
+
+Install dependencies:
+
+```bash
+pip install weaviate-client requests
+```
+
+---
+
+## Scripts
+
+### `app.py` — Health check
+Verifies that both Ollama and Weaviate are reachable before doing any work.
+
+### `ingest.py` — Ingest text into the knowledge base
+Accepts a plain text string, splits it into overlapping word-based chunks (~50 words each, 10-word overlap), generates a 2560-dim embedding for each chunk via Ollama `/api/embed`, and stores the chunk + vector in Weaviate under a collection called `KnowledgeBase`. Creates the collection automatically if it does not exist.
+
+### `query.py` — Query the knowledge base
+Accepts a question, embeds it using Ollama, retrieves the 3 nearest chunks from Weaviate via cosine similarity search, then sends those chunks as context to Ollama `/api/generate` to produce a final grounded answer.
+
+---
+
 ## Usage
 
 ### Step 1 — Health check
 
-Verify both Ollama and Weaviate are reachable:
-
 ```bash
-python3 app.py
+python app.py
 ```
 
 Expected output:
@@ -135,13 +155,13 @@ Both services are up and ready.
 Pass any text as an argument:
 
 ```bash
-python3 ingest.py "Satish is an AI engineer based in Hyderabad. He is learning to build AI systems using Docker. He uses Ollama to run local LLMs and Weaviate as a vector database. His goal is to get a job in the AI field by building real projects."
+python ingest.py "Satish is an AI engineer based in Hyderabad. He is learning to build AI systems using Docker. He uses Ollama to run local LLMs and Weaviate as a vector database. His goal is to get a job in the AI field by building real projects."
 ```
 
 Or pipe from a file:
 
 ```bash
-cat mydocument.txt | python3 ingest.py
+cat mydocument.txt | python ingest.py
 ```
 
 Run multiple times with different text to grow the knowledge base. Each run appends — it does not overwrite.
@@ -159,11 +179,15 @@ Ingestion complete. 1 chunk(s) stored in 'KnowledgeBase'.
 ### Step 3 — Ask a question
 
 ```bash
-python3 query.py "Where is Satish based and what is his goal?"
+python query.py "Where is Satish based and what is his goal?"
 ```
 
 ```bash
-python3 query.py "What is deep learning?"
+python query.py "What is deep learning?"
+```
+
+```bash
+python query.py "What tools does Satish use?"
 ```
 
 Expected output:
@@ -176,18 +200,19 @@ Searching 'KnowledgeBase' for top 3 chunks...
 Retrieved chunks:
   [chunk 3] dist=0.3300  "Satish is an AI engineer based in Hyderabad..."
   [chunk 1] dist=0.6193  "Artificial intelligence is the simulation of..."
+  [chunk 2] dist=0.7794  "computers to understand and generate human language..."
 
 Generating answer...
 
 Answer:
-Satish is based in Hyderabad. His goal is to get a job in the AI field by building real projects.
+Satish is based in Hyderabad, and his goal is to get a job in the AI field by building real projects.
 ```
 
 ---
 
 ## Configuration
 
-All settings are defined at the top of each script:
+All settings are defined at the top of each script and can be edited directly:
 
 | Constant | Default | Description |
 |---|---|---|
@@ -217,13 +242,13 @@ rag-knowledge-base/
 
 ## Cleanup
 
-To stop and remove Weaviate:
+Stop and remove Weaviate:
 
 ```bash
 docker stop weaviate && docker rm weaviate
 ```
 
-To remove the Ollama model:
+Remove the Ollama model:
 
 ```bash
 ollama rm granite4.1:3b
