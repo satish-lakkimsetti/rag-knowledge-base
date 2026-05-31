@@ -1,83 +1,172 @@
-# Local RAG Pipeline
+# rag-knowledge-base
 
-A fully local Retrieval-Augmented Generation (RAG) system that ingests plain text, stores semantic embeddings in a vector database, and answers questions using a local LLM — no cloud services required.
+A fully local Retrieval-Augmented Generation (RAG) system. Feed it any text, ask it questions, get answers grounded in your own data — no cloud, no API costs, no data leaving your machine.
 
-## What it does
+Built with Ollama, Weaviate, and Python. Everything runs in Docker.
 
-1. **Ingest** — splits text into chunks, generates an embedding for each chunk using a local LLM, and stores the chunks + vectors in Weaviate.
-2. **Query** — embeds a question, finds the most semantically similar chunks via vector search, then feeds those chunks as context to the LLM to generate a grounded answer.
+---
+
+## How it works
+
+1. **Ingest** — you give it text. It splits it into chunks, converts each chunk into a vector (a numerical fingerprint of its meaning) using a local AI model, and stores everything in Weaviate.
+2. **Search** — you ask a question. The question gets converted to a vector. Weaviate finds the chunks whose vectors are closest to your question.
+3. **Answer** — those chunks get sent to the local LLM as context. It reads them and writes a grounded answer, sourced from your data.
+
+---
 
 ## Stack
 
 | Layer | Technology |
 |---|---|
-| Local LLM + Embeddings | [Ollama](https://ollama.com) running `granite4.1:3b` |
-| Vector Database | [Weaviate](https://weaviate.io) |
-| Embedding endpoint | Ollama `/api/embed` |
-| Generation endpoint | Ollama `/api/generate` |
-| Weaviate client | `weaviate-client` v4 (Python) |
-| HTTP client | `requests` (Python) |
+| Local LLM + Embeddings | [Ollama](https://ollama.com) with `granite4.1:3b` |
+| Vector database | [Weaviate](https://weaviate.io) |
 | Runtime | Python 3.14 |
-| Infrastructure | Docker (Ollama on port 11434, Weaviate on port 8080) |
+| Infrastructure | Docker (host network) |
 
-## Scripts
+---
 
-### `app.py` — Health check
-Verifies that both Ollama and Weaviate are reachable before doing any work.
+## Prerequisites
 
-### `ingest.py` — Ingest text into the knowledge base
-Accepts a plain text string, splits it into overlapping word-based chunks (~50 words each, 10-word overlap), generates a 2560-dim embedding for each chunk via Ollama, and stores the chunk + vector in Weaviate under a collection called `KnowledgeBase`. Creates the collection automatically if it does not exist.
+- Ubuntu (or any Linux machine)
+- [Docker](https://docs.docker.com/engine/install/ubuntu/) installed and running
 
-### `query.py` — Query the knowledge base
-Accepts a question, embeds it using Ollama, retrieves the 3 nearest chunks from Weaviate via cosine similarity search, then sends those chunks as context to Ollama to generate a final answer.
+---
 
-## How to run
+## Setup
 
-### 1. Check both services are up
+### 1. Install Ollama
+
+Go to [ollama.com](https://ollama.com) and follow the official Linux install instructions, or run:
 
 ```bash
-python3 /workspace/app.py
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+Verify it is running:
+
+```bash
+ollama --version
+```
+
+Pull the model used by this project:
+
+```bash
+ollama pull granite4.1:3b
+```
+
+Ollama runs on `http://localhost:11434` by default.
+
+---
+
+### 2. Run Weaviate
+
+Run Weaviate as a Docker container on host network:
+
+```bash
+docker run -d \
+  --network host \
+  --name weaviate \
+  -e AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true \
+  -e PERSISTENCE_DATA_PATH=/var/lib/weaviate \
+  -e DEFAULT_VECTORIZER_MODULE=none \
+  -e CLUSTER_HOSTNAME=node1 \
+  cr.weaviate.io/semitechnologies/weaviate:latest
+```
+
+Verify it is running:
+
+```bash
+curl http://localhost:8080/v1/meta
+```
+
+You should see a JSON response with Weaviate version info.
+
+**Environment variables explained:**
+
+| Variable | Value | Purpose |
+|---|---|---|
+| `AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED` | `true` | Disables login — fine for local dev |
+| `PERSISTENCE_DATA_PATH` | `/var/lib/weaviate` | Where Weaviate stores data inside the container |
+| `DEFAULT_VECTORIZER_MODULE` | `none` | We handle vectorization ourselves via Ollama |
+| `CLUSTER_HOSTNAME` | `node1` | Required name for the single-node cluster |
+
+---
+
+### 3. Set up the Python environment
+
+Install dependencies:
+
+```bash
+pip3 install weaviate-client requests --break-system-packages
+```
+
+---
+
+### 4. Clone this repo
+
+```bash
+git clone https://github.com/satish-lakkimsetti/rag-knowledge-base.git
+cd rag-knowledge-base
+```
+
+---
+
+## Usage
+
+### Step 1 — Health check
+
+Verify both Ollama and Weaviate are reachable:
+
+```bash
+python3 app.py
 ```
 
 Expected output:
 ```
 [OK] Ollama is reachable at http://localhost:11434
 [OK] Weaviate is reachable at http://localhost:8080
-
 Both services are up and ready.
 ```
 
-### 2. Ingest text
+---
 
-Pass any plain text string as an argument:
+### Step 2 — Ingest text
 
-```bash
-python3 /workspace/ingest.py "Satish is an AI engineer based in Hyderabad. He is learning to build AI systems using Docker containers. He uses Ollama to run local LLMs and Weaviate as a vector database. His goal is to get a job in the AI field by building real projects."
-```
-
-You can also pipe text from a file:
+Pass any text as an argument:
 
 ```bash
-cat mydocument.txt | python3 /workspace/ingest.py
+python3 ingest.py "Satish is an AI engineer based in Hyderabad. He is learning to build AI systems using Docker. He uses Ollama to run local LLMs and Weaviate as a vector database. His goal is to get a job in the AI field by building real projects."
 ```
 
-Run multiple times with different text to build up the knowledge base. Each run appends new chunks — it does not overwrite existing ones.
-
-### 3. Query the knowledge base
+Or pipe from a file:
 
 ```bash
-python3 /workspace/query.py "Where is Satish based and what is his goal?"
+cat mydocument.txt | python3 ingest.py
+```
+
+Run multiple times with different text to grow the knowledge base. Each run appends — it does not overwrite.
+
+Expected output:
+```
+Text split into 1 chunk(s) (~50 words each, 10-word overlap)
+Collection 'KnowledgeBase' already exists — reusing it.
+Ingesting chunk 1/1... done (2560 dims)
+Ingestion complete. 1 chunk(s) stored in 'KnowledgeBase'.
+```
+
+---
+
+### Step 3 — Ask a question
+
+```bash
+python3 query.py "Where is Satish based and what is his goal?"
 ```
 
 ```bash
-python3 /workspace/query.py "What is deep learning?"
+python3 query.py "What is deep learning?"
 ```
 
-```bash
-python3 /workspace/query.py "What tools does Satish use?"
-```
-
-Expected output format:
+Expected output:
 ```
 Question: Where is Satish based and what is his goal?
 
@@ -87,17 +176,18 @@ Searching 'KnowledgeBase' for top 3 chunks...
 Retrieved chunks:
   [chunk 3] dist=0.3300  "Satish is an AI engineer based in Hyderabad..."
   [chunk 1] dist=0.6193  "Artificial intelligence is the simulation of..."
-  [chunk 2] dist=0.7794  "computers to understand and generate human language..."
 
 Generating answer...
 
 Answer:
-Satish is based in Hyderabad, and his goal is to get a job in the AI field by building real projects.
+Satish is based in Hyderabad. His goal is to get a job in the AI field by building real projects.
 ```
+
+---
 
 ## Configuration
 
-All constants are defined at the top of each script and can be edited directly:
+All settings are defined at the top of each script:
 
 | Constant | Default | Description |
 |---|---|---|
@@ -110,3 +200,31 @@ All constants are defined at the top of each script and can be edited directly:
 | `CHUNK_WORDS` | `50` | Target chunk size in words |
 | `CHUNK_OVERLAP` | `10` | Word overlap between consecutive chunks |
 | `TOP_K` | `3` | Number of chunks retrieved per query |
+
+---
+
+## Project structure
+
+```
+rag-knowledge-base/
+├── app.py        # Health check — verifies Ollama and Weaviate are reachable
+├── ingest.py     # Ingests text into the knowledge base
+├── query.py      # Queries the knowledge base and generates an answer
+└── README.md
+```
+
+---
+
+## Cleanup
+
+To stop and remove Weaviate:
+
+```bash
+docker stop weaviate && docker rm weaviate
+```
+
+To remove the Ollama model:
+
+```bash
+ollama rm granite4.1:3b
+```
